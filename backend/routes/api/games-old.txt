@@ -1,0 +1,17 @@
+const express = require('express');
+const router = express.Router();
+const db = require('../../db'); // Ensure you have the correct database connection
+
+
+// GET /api/games - List all games
+router.get('/', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM games ORDER BY start_time ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching games:', err);
+    res.status(500).json({ message: 'Error fetching games' });
+  }
+});
+
+module.exports = router;
