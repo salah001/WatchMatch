@@ -317,73 +317,83 @@ router.get('/bar/:bar_id', authenticateToken, async (req, res) => {
 
 // GET /api/screenings/game/:external_game_id/bars
 router.get('/game/:external_game_id/bars', authenticateToken, async (req, res) => {
+
     const { external_game_id } = req.params;
+    const latitude = parseFloat(req.query.lat);
+    const longitude = parseFloat(req.query.lon);
+    const radius = parseInt(req.query.radius, 10) || 10000; // Default radius 10km
 
-    // Get location query parameters (provide defaults or handle if missing)
-    const userLat = parseFloat(req.query.latitude);
-    const userLon = parseFloat(req.query.longitude);
-    // Default radius in KM (e.g., 10km). Make this configurable?
-    const radiusKm = parseFloat(req.query.radius) || 10.0; 
+    let query;
+    let queryParams;
 
-    console.log(`API /screenings/game/${external_game_id}/bars request. Loc: ${userLat},${userLon}, Radius: ${radiusKm}km`);
+    // Check if latitude and longitude are valid numbers
+    if (!isNaN(latitude) && !isNaN(longitude)) {
 
-    if (!external_game_id) {
-        return res.status(400).json({ message: "Missing external_game_id parameter." });
-    }
+    	// --- LOCATION IS PROVIDED ---
+    	console.log(`API /screenings/game/${external_game_id}/bars request. Loc: ${latitude},${longitude}, Radius: ${radius/1000}km`);
 
-    // Check if lat/lon are provided for distance filtering
-    const useDistanceFilter = !isNaN(userLat) && !isNaN(userLon);
-    if (useDistanceFilter) {
-         console.log("Applying distance filter.");
+    	// Construct PostGIS Query using the GEOGRAPHY column and ST_DWithin
+    	query = `
+        	SELECT DISTINCT
+            		b.id,
+            		b.name,
+           		b.address,
+            		b.description,
+            		-- Optional: Select original lat/lon if needed, or derive from location
+            		ST_Y(b.location::geometry) as latitude,  -- Extract latitude from geography
+            		ST_X(b.location::geometry) as longitude, -- Extract longitude from geography
+            		-- Calculate distance in meters (using geography is accurate)
+            		ST_Distance(b.location, ST_MakePoint($2, $3)::geography) as distance_meters
+        	FROM screenings s
+        	JOIN bars b ON s.bar_id = b.id
+        	WHERE s.external_game_id = $1          -- Filter by game ID
+          	AND b.location IS NOT NULL             -- Ensure the bar has a location stored
+          	AND ST_DWithin(                      -- The core spatial filter
+              		b.location,                      -- Bar's location (geography)
+              		ST_MakePoint($2, $3)::geography, -- User's location (lon, lat) -> geography
+              		$4                               -- Radius in meters
+          		)
+        	ORDER BY distance_meters; -- Order results by distance (nearest first)
+    	`;
+    	// Parameters: game_id, user_longitude, user_latitude, radius
+    	queryParams = [external_game_id, longitude, latitude, radius];
+
     } else {
-         console.log("No location provided, returning all bars for game.");
+    	// --- LOCATION NOT PROVIDED (or invalid) ---
+    	console.log(`API /screenings/game/${external_game_id}/bars request. Loc: ${req.query.lat || 'N/A'},${req.query.lon || 'N/A'} 	(Not Used). Radius: ${radius/1000}km`);
+    	console.log('No valid location provided, returning all bars for game (with location).');
+
+    	// Fallback query: Get all bars for the game that HAVE a location stored
+    	query = `
+        	SELECT DISTINCT
+            		b.id,
+            		b.name,
+            		b.address,
+            		b.description,
+            		ST_Y(b.location::geometry) as latitude,  -- Extract latitude
+            		ST_X(b.location::geometry) as longitude -- Extract longitude
+            		-- Cannot calculate distance meaningfully without user location
+        	FROM screenings s
+        	JOIN bars b ON s.bar_id = b.id
+        	WHERE s.external_game_id = $1
+          	AND b.location IS NOT NULL; -- Only include bars with a location
+    	`;
+    	queryParams = [external_game_id];
     }
 
     try {
-      const query = `
-            SELECT DISTINCT
-                b.id,
-                b.name,
-                b.address,
-                b.description
-                b.latitude,  -- Uncomment when location is added
-                b.longitude -- Uncomment when location is added
-            FROM screenings s
-            JOIN bars b ON s.bar_id = b.id
-            WHERE s.external_game_id = $1;
-	    AND b.latitude IS NOT NULL  -- Only include bars with coordinates
-            AND b.longitude IS NOT NULL;
-        `;
-	// Note: Filtering by distance in SQL is more efficient, especially with PostGIS (ST_DWithin).
-        // Doing it in JS after fetching ALL bars is less performant for large datasets.
-        // But for simplicity now, we'll filter in JS if location is provided.
-        const result = await db.query(query, [external_game_id]);
-	let bars = result.rows;
+      console.log("Executing query:", query);
+      console.log("With params:", queryParams);
+      const result = await db.query(query, queryParams); // Use the correct query and params
 
-	if (useDistanceFilter) {
-            bars = bars.filter(bar => {
-                if (bar.latitude && bar.longitude) {
-                     const distance = getDistance(userLat, userLon, bar.latitude, bar.longitude);
-                     return distance <= radiusKm;
-                }
-                return false; // Exclude if bar has no coordinates
-            });
-             // Optional: Add distance to each bar object
-             bars.forEach(bar => {
-                bar.distance = getDistance(userLat, userLon, bar.latitude, bar.longitude);
-             });
-             // Optional: Sort by distance
-             bars.sort((a, b) => a.distance - b.distance);
-        }
+      console.log(`Found ${result.rows.length} bars showing game ${external_game_id}` + (!isNaN(latitude) && !isNaN(longitude) ? '   nearby.' : ' (all with location).'));
+      res.json(result.rows);
 
-        console.log(`Found ${bars.length} bars showing game ${external_game_id}`);
-        res.json(result.rows);
-
-    } catch (err) {
-        console.error(`Error fetching bars for game ${external_game_id}:`, err);
-        res.status(500).json({ message: "Internal server error while fetching bars for the game." });
-    }
-});
-
-
+   } catch (err) {
+    console.error(`Error fetching bars for game ${external_game_id}:`, err);
+    // Send back a more specific error if it's PostGIS related? Maybe not needed for client.
+    res.status(500).json({ message: 'Internal server error while fetching bars.' });
+   }
+}
+);
 module.exports = router;

@@ -1,14 +1,226 @@
 // services/sportsApiService.js
 const axios = require('axios');
-
-const BASE_URL = process.env.SPORTS_API_BASE_URL;
+const NodeCache = require('node-cache');
+//const BASE_URL = process.env.SPORTS_API_BASE_URL;
 const API_KEY = process.env.SPORTS_API_KEY;
 
-if (!BASE_URL || !API_KEY) {
+
+if (!API_KEY) {
     console.warn("Warning: Sports API Base URL or Key not found in environment variables.");
     // Optionally throw an error if the API is critical:
     // throw new Error("Missing Sports API configuration.");
 }
+
+// Cache setup remains the same
+const apiCache = new NodeCache({ stdTTL: 86400, checkperiod: 3600 }); // Daily TTL, check hourly
+
+// --- NEW Mapping Functions for api-sports.io ---
+
+// Example for API-Football (v3)
+const mapFootballEventToStandard = (apiEvent) => {
+    const fixture = apiEvent?.fixture;
+    const league = apiEvent?.league;
+    const teams = apiEvent?.teams;
+
+    if (!fixture?.id || !league?.id || !teams?.home?.id || !teams?.away?.id) {
+        console.warn("[MapFootball] Invalid event structure:", apiEvent);
+        return null;
+    }
+
+    let startTimeISO = null;
+    try {
+        // API-Football usually provides full ISO 8601 datetime string
+        if (fixture.date) {
+             const parsedDate = new Date(fixture.date);
+             if (!isNaN(parsedDate.getTime())) {
+                 startTimeISO = parsedDate.toISOString();
+             } else {
+                  console.warn(`[MapFootball][${fixture.id}] Could not parse fixture date: ${fixture.date}`);
+             }
+        }
+    } catch(e) {
+        console.error(`[MapFootball][${fixture.id}] Error parsing date:`, e);
+    }
+
+    return {
+        id: String(fixture.id), // Ensure ID is string
+        sport: 'Soccer', // Hardcode or get from config?
+        league: league.name || 'Unknown League',
+        homeTeam: teams.home.name || 'TBD',
+        awayTeam: teams.away.name || 'TBD',
+        startTime: startTimeISO,
+        status: fixture.status?.long || fixture.status?.short || 'Scheduled', // Use long status if available
+        venue: fixture.venue?.name || null,
+        apiSource: 'apisports-football'
+    };
+};
+
+// Example for API-Basketball
+const mapBasketballEventToStandard = (apiEvent) => {
+    // *** VERIFY response structure for Basketball ***
+    const game = apiEvent; // Assuming top-level object is the game/fixture
+    const league = apiEvent?.league;
+    const teams = apiEvent?.teams;
+
+     if (!game?.id || !league?.id || !teams?.home?.id || !teams?.away?.id) {
+         console.warn("[MapBasketball] Invalid event structure:", apiEvent);
+         return null;
+     }
+
+    let startTimeISO = null;
+     try {
+         // Basketball API might use 'date' directly under game object? VERIFY
+         if (game.date) {
+              const parsedDate = new Date(game.date); // Assumes full ISO string
+              if (!isNaN(parsedDate.getTime())) {
+                  startTimeISO = parsedDate.toISOString();
+              } else {
+                   console.warn(`[MapBasketball][${game.id}] Could not parse game date: ${game.date}`);
+              }
+         }
+     } catch(e) {
+         console.error(`[MapBasketball][${game.id}] Error parsing date:`, e);
+     }
+
+    return {
+        id: String(game.id),
+        sport: 'Basketball',
+        league: league.name || 'Unknown League',
+        homeTeam: teams.home.name || 'TBD',
+        awayTeam: teams.away.name || 'TBD',
+        startTime: startTimeISO,
+        // Status might be under game.status.long? VERIFY
+        status: game.status?.long || game.status?.short || 'Scheduled',
+        // Venue might be under game.arena.name? VERIFY
+        venue: game.arena?.name || null,
+        apiSource: 'apisports-basketball'
+    };
+};
+
+// Example for API-AmericanFootball (NFL/NCAA)
+const mapAmFootballEventToStandard = (apiEvent) => {
+    // *** VERIFY response structure for American Football ***
+    const game = apiEvent; // Assuming top-level object is the game/fixture
+    const league = apiEvent?.league;
+    const teams = apiEvent?.teams;
+
+     if (!game?.id || !league?.id || !teams?.home?.id || !teams?.away?.id) {
+         console.warn("[MapAmFootball] Invalid event structure:", apiEvent);
+         return null;
+     }
+
+    let startTimeISO = null;
+     try {
+         // Check structure - maybe game.game.date? or game.date?
+         if (game.date) { // VERIFY this path
+              const parsedDate = new Date(game.date);
+              if (!isNaN(parsedDate.getTime())) {
+                  startTimeISO = parsedDate.toISOString();
+              } else {
+                   console.warn(`[MapAmFootball][${game.id}] Could not parse game date: ${game.date}`);
+              }
+         }
+     } catch(e) {
+         console.error(`[MapAmFootball][${game.id}] Error parsing date:`, e);
+     }
+
+    return {
+        id: String(game.id),
+        sport: 'American Football',
+        league: league.name || 'Unknown League', // Check league object structure
+        homeTeam: teams.home.name || 'TBD', // Check teams object structure
+        awayTeam: teams.away.name || 'TBD',
+        startTime: startTimeISO,
+        status: game.status?.long || game.status?.short || 'Scheduled', // Check status object structure
+        venue: game.venue?.name || null, // Check venue object structure
+        apiSource: 'apisports-amfootball'
+    };
+};
+
+// Example for Combat Sports (Boxing/MMA) - Might share structure
+const mapCombatEventToStandard = (apiEvent) => {
+     // *** VERIFY response structure for Boxing/MMA Fights ***
+     // These might be structured very differently - e.g., 'fight' object, 'fighters' array?
+    const fight = apiEvent; // Assuming top-level is the fight
+
+     if (!fight?.id || !fight.league?.id /* ... other critical fields */) {
+         console.warn("[MapCombat] Invalid event structure:", apiEvent);
+         return null;
+     }
+
+    let startTimeISO = null;
+     try {
+         // Check where date/time is stored - maybe fight.date?
+         if (fight.date) { // VERIFY
+              const parsedDate = new Date(fight.date);
+              if (!isNaN(parsedDate.getTime())) {
+                  startTimeISO = parsedDate.toISOString();
+              } else {
+                   console.warn(`[MapCombat][${fight.id}] Could not parse fight date: ${fight.date}`);
+              }
+         }
+     } catch(e) {
+         console.error(`[MapCombat][${fight.id}] Error parsing date:`, e);
+     }
+
+     // Extracting "teams" might involve looking at a fighters array/object
+     // This is highly speculative - NEEDS DOCS/SAMPLE DATA
+     const fighter1 = fight.fighters?.main?.fighter1?.name || fight.fighters?.[0]?.name || 'Fighter 1';
+     const fighter2 = fight.fighters?.main?.fighter2?.name || fight.fighters?.[1]?.name || 'Fighter 2';
+
+    return {
+        id: String(fight.id),
+        sport: fight.league?.sport?.name || 'Combat Sport', // Get sport type if available
+        league: fight.league?.name || 'Unknown Event', // League/Promotion name
+        homeTeam: fighter1, // Use fighter names as "teams"
+        awayTeam: fighter2,
+        startTime: startTimeISO,
+        status: fight.status?.long || fight.status?.short || 'Scheduled', // Check status structure
+        venue: fight.venue?.name || fight.arena?.name || null, // Check venue structure
+        apiSource: 'apisports-combat' // Or specific boxing/mma
+    };
+};
+//**********************************
+
+const SPORT_API_CONFIG = {
+    'soccer': { // Use consistent lowercase keys
+        baseURL: 'https://v3.football.api-sports.io', // VERIFY exact hostname
+        endpoints: {
+            fixtures: '/fixtures' // VERIFY endpoint for fixtures by date
+        },
+        mapFunction: mapFootballEventToStandard // Specific mapping function
+    },
+    'basketball': {
+        baseURL: 'https://v1.basketball.api-sports.io', // VERIFY exact hostname
+        endpoints: {
+            games: '/games' // VERIFY endpoint for games by date
+        },
+        mapFunction: mapBasketballEventToStandard // Specific mapping function
+    },
+    'american football': { // Handle variations like 'Football' vs 'American Football'
+        baseURL: 'https://v1.american-football.api-sports.io', // VERIFY exact hostname
+        endpoints: {
+            games: '/games' // VERIFY endpoint
+        },
+        mapFunction: mapAmFootballEventToStandard
+    },
+    'boxing': {
+         baseURL: 'https://v1.boxing.api-sports.io', // VERIFY exact hostname
+         endpoints: {
+             fights: '/fights' // VERIFY endpoint for fights by date (might differ)
+         },
+         mapFunction: mapCombatEventToStandard // May share with MMA?
+    },
+     'mma': {
+         baseURL: 'https://v1.mma.api-sports.io', // VERIFY exact hostname
+         endpoints: {
+             fights: '/fights' // VERIFY endpoint
+         },
+         mapFunction: mapCombatEventToStandard // May share with Boxing?
+     }
+    // Add other sports as needed
+};
+
 
 /**
  * Standardized Game Object Format:
@@ -22,7 +234,7 @@ if (!BASE_URL || !API_KEY) {
  *   startTime: Date, // ISO Date string or Date object
  *   status: string, // e.g., "Not Started", "In Play", "Finished"
  *   venue: string | null,
- *   apiSource: string // Identifier for the API source (e.g., 'thesportsdb')
+ *   apiSource: string // Identifier for the API source 
  * }
  */
 
@@ -31,35 +243,75 @@ if (!BASE_URL || !API_KEY) {
  * @param {object} apiEvent - An event object from TheSportsDB API response.
  * @returns {object} A standardized game object.
  */
-const mapApiEventToStandardGame = (apiEvent) => {
-    if (!apiEvent || !apiEvent.idEvent) {
-         console.warn("Received invalid event object from API:", apiEvent);
-         return null; // Or throw an error
+const mapTheSportsDBEventToStandard = (apiEvent) => {
+    const eventId = apiEvent?.idEvent || 'UNKNOWN_ID';
+
+    if (!apiEvent || !apiEvent.idEvent) return null;
+
+    let parsedDate = null; 
+   
+    try {
+        const datePart = apiEvent.dateEvent;
+        let timePart = apiEvent.strTime;
+
+        if (datePart && datePart.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            let attemptString = null;
+            if (timePart) {
+                if (timePart.match(/^\d{2}:\d{2}$/)) {
+                    timePart += ':00';
+                }
+                if (timePart.match(/^\d{2}:\d{2}:\d{2}$/)) {
+                    // Assume UTC, construct ISO attempt string
+                    attemptString = `${datePart}T${timePart}Z`;
+                } else {
+                    console.warn(`[Mapping][${eventId}] Invalid time format, ignoring time: ${timePart}`);
+                    // Fall through to date-only logic
+                }
+            }
+
+            // If we have a valid combined string OR no valid time was found
+            if (attemptString || !timePart) {
+                 // If no timepart, attemptString is null, try date only
+                if (!attemptString) {
+                     attemptString = `${datePart}T00:00:00Z`; // Treat date as UTC midnight
+                }
+
+                // Now try to parse the constructed string
+                const tempDate = new Date(attemptString);
+                if (!isNaN(tempDate.getTime())) {
+                    parsedDate = tempDate; // Assign the VALID Date object
+                    // console.log(`[Mapping][${eventId}] Successfully parsed: ${attemptString}`);
+                } else {
+                     console.warn(`[Mapping][${eventId}] Could not parse constructed/fallback dateTimeString: ${attemptString}`);
+                }
+            }
+        } else if (datePart) {
+             console.warn(`[Mapping][${eventId}] Invalid date format: ${datePart}`);
+        } else {
+             console.warn(`[Mapping][${eventId}] Missing dateEvent.`);
+        }
+    } catch (e) {
+        console.error(`[Mapping][${eventId}] Unexpected error processing date/time:`, apiEvent, e);
     }
+    let finalStartTimeISO = null;
 
-    // Ensure startTime parsing is robust
-     let startTime = null;
-     try {
-         // Example: Handle combined date/time or just date
-         if (apiEvent.dateEvent && apiEvent.strTime) {
-             // Check if time includes timezone info, otherwise assume UTC or local? Needs clarification from API docs.
-             // Let's assume local for now, but this might need adjustment.
-             startTime = new Date(`${apiEvent.dateEvent}T${apiEvent.strTime}`);
-         } else if (apiEvent.dateEvent) {
-             startTime = new Date(apiEvent.dateEvent); // Only date provided
-         }
-     } catch (e) {
-         console.error("Error parsing date/time from API event:", apiEvent, e);
-     }
-
+    // --- *** FINAL EXPLICIT CHECK *** ---
+    if (parsedDate instanceof Date && !isNaN(parsedDate.getTime())) {
+         // Only call toISOString if parsedDate is definitely a valid Date
+         finalStartTimeISO = parsedDate.toISOString();
+    } else {
+         // Log if we ended up with something invalid or null before trying to return
+         console.warn(`[Mapping][${eventId}] Final check failed: parsedDate is not a valid Date. Value:`, parsedDate);
+    }
+    // --- *** END FINAL CHECK *** ---
 
     return {
-        id: apiEvent.idEvent, // Use the API's unique event ID
+        id: eventId, 
         sport: apiEvent.strSport || 'Unknown Sport',
         league: apiEvent.strLeague || 'Unknown League',
         homeTeam: apiEvent.strHomeTeam || 'TBD',
         awayTeam: apiEvent.strAwayTeam || 'TBD',
-        startTime: startTime ? startTime.toISOString() : null,         
+        startTime: new Date(apiEvent.dateEvent + 'T' + (apiEvent.strTime || '00:00:00') + 'Z').toISOString(),        
 	status: apiEvent.strStatus || 'Scheduled', // Map API status values if needed
         venue: apiEvent.strVenue || null,
         apiSource: 'thesportsdb',
@@ -68,60 +320,21 @@ const mapApiEventToStandardGame = (apiEvent) => {
     };
 };
 
-/**
- * Fetches upcoming events/games from TheSportsDB.
- * Adjust the endpoint based on the specific data you need (e.g., specific league, sport).
- * Example: Fetching next 5 events for English Premier League (id 4328)
- * Endpoint: /eventsnextleague.php?id=4328
- * Example: Fetching daily events by sport and date
- * Endpoint: /eventsday.php?d=YYYY-MM-DD&s=Soccer
- *
- * @param {object} [options={}] - Options like leagueId, sportName, date.
- * @returns {Promise<Array<object>>} A promise resolving to an array of standardized game objects.
- */
-const fetchUpcomingGames = async (options = {}) => {
-    // --- Choose the right TheSportsDB Endpoint ---
-    // This is just an EXAMPLE endpoint (next 5 EPL games).
-    // You'll need to adapt this based on HOW you want to fetch games
-    // (e.g., by date, by sport, all upcoming, etc.)
-    // Refer to TheSportsDB API docs!
-    const endpoint = `/eventsnextleague.php?id=4328`; // EXAMPLE: EPL League ID
-    const url = `${BASE_URL}/${API_KEY}${endpoint}`;
 
-    console.log(`[Sports API Service] Fetching games from: ${url}`);
 
-    try {
-        // Important: Ensure BASE_URL and API_KEY are defined
-        if (!BASE_URL || !API_KEY) {
-           throw new Error("Sports API is not configured in environment variables.");
-        }
-        const response = await axios.get(url);
+// --- Helper function to get dates - MISSING DEFINITION ---
 
-        // Check the structure of the ACTUAL response from TheSportsDB
-        // It might be response.data.events, response.data.results, etc.
-        if (response.data && response.data.events) {
-            const standardGames = response.data.events
-                .map(mapApiEventToStandardGame)
-                .filter(game => game !== null); // Filter out any invalid mappings
-            console.log(`[Sports API Service] Fetched and mapped ${standardGames.length} games.`);
-            return standardGames;
-        } else {
-            console.log("[Sports API Service] No events found in API response or unexpected structure:", response.data);
-            return []; // Return empty array if no events found
-        }
-    } catch (error) {
-        console.error("[Sports API Service] Error fetching games:", error.message);
-         if (error.response) {
-             console.error("API Response Status:", error.response.status);
-             console.error("API Response Data:", error.response.data);
-         } else if (error.request) {
-            console.error("API No response received:", error.request);
-         }
-        // Depending on requirements, you might want to return empty array or throw
-        // throw new Error('Failed to fetch games from external API.');
-        return []; // Return empty array on error to avoid breaking consumers
+const getNextNDates = (days) => {
+    const dates = [];
+    const today = new Date();
+    for (let i = 0; i < days; i++) {
+        const targetDate = new Date(today);
+        targetDate.setDate(today.getDate() + i);
+        dates.push(targetDate.toISOString().split('T')[0]); // YYYY-MM-DD
     }
+    return dates;
 };
+// ----------------------------------------------------------
 
  /**
   * Fetches details for a SINGLE game by its API ID.
@@ -169,84 +382,151 @@ const fetchUpcomingGames = async (options = {}) => {
  * @returns {Promise<Array<object>>} A promise resolving to an array of standardized game objects.
  */
 const searchGames = async (queryParams = {}) => {
-    const { sport = 'Soccer', team, league, date } = queryParams;
-    let endpoint = '';
-    let params = {};
+    const { sport, team, league, date } = queryParams;
 
-    // --- Determine the correct API endpoint based on parameters ---
-    // PRIORITIZE more specific searches (e.g., date over general league/team)
-    if (date) {
-        // Assumes /eventsday.php takes 'd' for date and 's' for sport
-        // VERIFY THIS with TheSportsDB docs
-        console.log(`[Sports API Service] Searching by Date: ${date}, Sport: ${sport}`);
-        endpoint = `/eventsday.php`;
-        params = { d: date, s: sport };
-    } else if (team) {
-        // Assumes /searchevents.php takes 'e' for event/team name and 's' for sport
-        // VERIFY THIS with TheSportsDB docs
-        console.log(`[Sports API Service] Searching by Team: ${team}, Sport: ${sport}`);
-        endpoint = `/searchevents.php`;
-        params = { e: team, s: sport };
-    } else if (league) {
-        // Assumes /searchevents.php can also search by league name? Or maybe needs league ID?
-        // Might need a preliminary call to find league ID if API requires it.
-        // Example: Using /eventsnextleague.php requires ID, not name.
-        // Let's assume /searchevents.php works with league name for now. VERIFY!
-        console.log(`[Sports API Service] Searching by League: ${league}, Sport: ${sport}`);
-        endpoint = `/searchevents.php`;
-        params = { e: league, s: sport }; // CHECK if 'e' works for leagues too
+    // --- *** Require Sport *** ---
+    if (!sport || sport.trim() === '') {
+        console.warn("[Sports API Service] Search called without mandatory 'sport' parameter.");
+        return []; // Return empty if sport is missing
+    }
+    const normalizedSport = sport.trim().toLowerCase();
+    const sportConfig = SPORT_API_CONFIG[normalizedSport];
+
+    if (!sportConfig) {
+        console.warn(`[Sports API Service] Unsupported sport requested: ${sport}`);
+        return [];
+    }
+
+    const numberOfDays = 15;
+    const cacheKey = `games_15day:${normalizedSport}`;
+    const cachedRawEvents = apiCache.get(cacheKey);
+    let apiResults = [];
+
+    // --- Check Cache ---
+    if (cachedRawEvents) {
+        console.log(`[Sports API Service] Cache HIT for key: ${cacheKey}`);
+        apiResults = cachedRawEvents;
     } else {
-        // Default search: Maybe upcoming games for the default sport?
-        // Or return error/empty? Let's fetch upcoming for the specified sport.
-        // Needs an appropriate endpoint. Let's reuse fetchUpcomingGames logic conceptually
-        // or find an endpoint like /eventsnext.php?s=Soccer (VERIFY)
-        console.log(`[Sports API Service] Default search: Upcoming for Sport: ${sport}`);
-        // Placeholder: Use fetchUpcomingGames or adapt its logic
-        // This might require fetching by league ID if there's no general sport endpoint
-        return fetchUpcomingGames({ sport: sport }); // Or implement specific logic here
+        console.log(`[Sports API Service] Cache MISS for key: ${cacheKey}. Fetching from API...`);
+        const datesToFetch = getNextNDates(numberOfDays);
+        const fetchPromises = [];
+	const urlsCalled = [];
+
+        for (const dateString of datesToFetch) {
+            const endpoint = sportConfig.endpoints.fixtures || sportConfig.endpoints.games || sportConfig.endpoints.fights;
+
+  	    if (!endpoint) {
+                 console.warn(`[Sports API Service] No fixture/game endpoint defined for ${normalizedSport}`);
+                 continue; // Skip if endpoint missing
+            }
+	    
+	    const params = { date: dateString };
+
+            const url = new URL(`${sportConfig.baseURL}${endpoint}`);
+            Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+	    const urlString = url.toString();
+            urlsCalled.push(urlString); // Store URL
+            fetchPromises.push(axios.get(url.toString(), {
+	   	headers: { 'x-apisports-key': API_KEY } } 
+	    ));
+        }
+
+	let fetchedApiResults = []; 
+        try {
+	    console.log(`[Sports API Service] Making ${fetchPromises.length} API calls...`);
+            const responses = await Promise.allSettled(fetchPromises);
+	    console.log("[Sports API Service] API Responses Received:", responses.length);
+            responses.forEach((result, index) => {
+		const requestUrl = urlsCalled[index];
+                if (result.status === 'fulfilled') {
+			console.log(`[Sports API Service] SUCCESS for ${requestUrl}. Data structure:`, JSON.stringify(result.value.data, null, 2).substring(0, 500) + '...');
+			const responseData = result.value.data?.response;
+			if (responseData && Array.isArray(responseData)) {
+                        	console.log(`[Sports API Service] Found ${responseData.length} events in response for ${requestUrl}.`);
+                        	fetchedApiResults = fetchedApiResults.concat(responseData);
+                    	} else {
+                        	console.warn(`[Sports API Service] No 'response' array found or not an array for ${requestUrl}. Full data logged above.`);
+                    	}
+                } else if (result.status === 'rejected') {
+                     console.error(`[Sports API Service] FAILED for ${requestUrl}:`, result.reason?.message || result.reason); // Log detailed error
+                     // Log Axios error details if available
+                     if (result.reason?.response) {
+                          console.error(`[Sports API Service] Error Status: ${result.reason.response.status}`);
+                          console.error(`[Sports API Service] Error Data:`, result.reason.response.data);
+                     }
+                }
+            });
+
+	    apiResults = fetchedApiResults;
+            if (apiResults.length > 0) {
+                 apiCache.set(cacheKey, apiResults);
+                 console.log(`[Sports API Service] Stored ${apiResults.length} raw events in cache for key: ${cacheKey}`);
+            } else {
+                 console.log(`[Sports API Service] No events found in any API responses. Caching empty result.`);
+                 apiCache.set(cacheKey, []);
+            }
+        } catch (error) {
+             console.error("[Sports API Service] Unexpected error fetching multi-day games:", error.message);
+             apiResults = [];
+        }
+    } // End API fetch logic
+
+    // --- Local Filtering ---
+    let filteredResults = apiResults;
+    console.log(`[Sports API Service] Starting with ${filteredResults.length} events for ${normalizedSport} before filtering.`);
+
+    // !! IMPORTANT: Update property names based on ACTUAL API response structure for EACH sport !!
+    if (league && filteredResults.length > 0) {
+         const lowerCaseLeague = league.toLowerCase().trim();
+         // Example: Football uses league.name, Basketball might use league.name too? Verify.
+         filteredResults = filteredResults.filter(event =>
+             event.league?.name && event.league.name.toLowerCase().includes(lowerCaseLeague)
+         );
+         console.log(`Filtered by League "${league}", ${filteredResults.length} results remain.`);
     }
-
-    // Construct URL with query parameters
-    const url = new URL(`${BASE_URL}/${API_KEY}${endpoint}`);
-    Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
-
-    console.log(`[Sports API Service] Calling API: ${url.toString()}`);
-
-    try {
-        if (!BASE_URL || !API_KEY) {
-           throw new Error("Sports API is not configured in environment variables.");
-        }
-        const response = await axios.get(url.toString());
-
-        // Process the response - ** The key might be 'event' for search, not 'events' - VERIFY! **
-        const eventsData = response.data?.event || response.data?.events || null; // Adjust based on actual API response structure
-
-        if (eventsData && Array.isArray(eventsData)) {
-            const standardGames = eventsData
-                .map(mapApiEventToStandardGame)
-                .filter(game => game !== null); // Filter out invalid mappings
-            console.log(`[Sports API Service] Search returned ${standardGames.length} games.`);
-            return standardGames;
-        } else {
-            console.log("[Sports API Service] No events found in search response or unexpected structure:", response.data);
-            return [];
-        }
-    } catch (error) {
-        console.error("[Sports API Service] Error searching games:", error.message);
-        if (error.response) {
-            console.error("API Response Status:", error.response.status);
-            console.error("API Response Data:", error.response.data);
-        } else if (error.request) {
-           console.error("API No response received:", error.request);
-        }
-        return []; // Return empty array on error
+     if (team && filteredResults.length > 0) {
+         const lowerCaseTeam = team.toLowerCase().trim();
+         // Example: Football uses teams.home.name / teams.away.name. Basketball? NFL? Combat? Verify.
+          filteredResults = filteredResults.filter(event =>
+             (event.teams?.home?.name && event.teams.home.name.toLowerCase().includes(lowerCaseTeam)) ||
+             (event.teams?.away?.name && event.teams.away.name.toLowerCase().includes(lowerCaseTeam))
+         );
+         console.log(`Filtered by Team "${team}", ${filteredResults.length} results remain.`);
     }
+     if (date && filteredResults.length > 0) {
+         // Example: Football uses fixture.date (full ISO string). Basketball? NFL? Verify.
+         // Need to compare only the date part.
+         const filterDate = date; // YYYY-MM-DD
+         filteredResults = filteredResults.filter(event =>
+             event.fixture?.date && event.fixture.date.startsWith(filterDate)
+         );
+         console.log(`Filtered by Date "${filterDate}", ${filteredResults.length} results remain.`);
+     }
+
+    // --- Map final filtered results using sport-specific mapper ---
+    const mapFn = sportConfig.mapFunction;
+    if (!mapFn) {
+        console.error(`[Sports API Service] No mapping function defined for sport: ${normalizedSport}`);
+        return []; // Cannot map if function is missing
+    }
+    const standardGames = filteredResults
+        .map(mapFn) // Use the correct mapping function
+        .filter(game => game !== null);
+
+    console.log(`[Sports API Service] Search finalized. Returning ${standardGames.length} games.`);
+    return standardGames;
 };
+
+// Make sure fetchUpcomingGames is also updated if used as a fallback
+// or by the owner's GET /api/games route to be more flexible
+// (e.g., accept sport, date range options)
 
 
 module.exports = {
-    fetchUpcomingGames,
     fetchGameDetails,
     searchGames, 
-    mapApiEventToStandardGame 
+    // Export individual mappers if needed elsewhere, or keep them internal
+    // mapFootballEventToStandard,
+    // mapBasketballEventToStandard,
+    // ... 
 };

@@ -1,106 +1,145 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { toast } from 'react-toastify';
-import { View, Text, TextInput, Button, StyleSheet, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, TextInput, Button, StyleSheet, Alert, FlatList, Pressable, ActivityIndicator, TouchableOpacity, SafeAreaView, ScrollView, Platform } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import DatePicker from 'react-datepicker';
 import "react-datepicker/dist/react-datepicker.css";
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { UserContext } from '../../context/UserContext';
-import { Platform } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import axios from 'axios'; 
+import { formatApiDateTime, formatDateForApi } from '../../utils/dateTimeUtils';
+
 import { API_BASE_URL } from '../../config/api'; 
 
-
+// Define supported sports list
+const SUPPORTED_SPORTS = [
+    { label: 'Soccer', value: 'Soccer' },
+    { label: 'Basketball', value: 'Basketball' },
+    { label: 'American Football', value: 'American Football' }, // Match API if needed
+    { label: 'Boxing', value: 'Boxing' },
+    { label: 'MMA', value: 'MMA' },
+];
 
 const AddScreening = () => {
   const navigation = useNavigation(); // Get navigation object via hook
   const route = useRoute(); 
   const { user, token, loading: userLoading } = useContext(UserContext);
-  const preSelectedBarId = route.params?.barId ?? null;
-  const [bars, setBars] = useState([]);
-  const [games, setGames] = useState([]);
-  const [barId, setBarId] = useState('');
-  const [gameId, setGameId] = useState('');
-  const [screeningTime, setScreeningTime] = useState(new Date());
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [isFetchingData, setIsFetchingData] = useState(true);
-  const [fetchError, setFetchError] = useState(null);
 
+  // --- Component State ---
+  const [barId, setBarId] = useState(route.params?.barId ?? null);
+
+  // Search Criteria State
+  const [searchSport, setSearchSport] = useState(''); 
+  const [searchLeague, setSearchLeague] = useState('');
+  const [searchTeam, setSearchTeam] = useState('');
+  const [searchDate, setSearchDate] = useState(null); // For the date picker
+
+  // Game Selection State
+  const [gameId, setGameId] = useState('');
+  const [games, setGames] = useState([]);
+  const [selectedGameForDisplay, setSelectedGameForDisplay] = useState(null);
+
+  // Screening Time State
+  const [screeningTime, setScreeningTime] = useState(new Date());
+
+  // UI Control State
+  const [showOwnerDatePicker, setShowOwnerDatePicker] = useState(false); 
+  const [showScreeningTimePicker, setShowScreeningTimePicker] = useState(false);
+  const [isFetchingInitial, setIsFetchingInitial] = useState(true);
+  const [isSearchingGames, setIsSearchingGames] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+
+  // Error State
+  const [fetchError, setFetchError] = useState(null);
+  const [searchError, setSearchError] = useState(null);
+  
 
   useEffect(() => {
 
-  if (preSelectedBarId && barId !== preSelectedBarId) {
-        console.log("Setting barId from route param:", preSelectedBarId);
-        setBarId(preSelectedBarId);
+  const routeBarId = route.params?.barId;
+  if (routeBarId && barId !== routeBarId) {
+    console.log("Setting barId from route param via useEffect:", routeBarId);
+    setBarId(routeBarId);
   }
 
-  if (userLoading || !token) {
-      console.log(`⏳ Waiting: User1 Loading=${userLoading}, Token Available=${!!token}`);
-      // Reset lists if token becomes null after being set (e.g., logout)
-      if (!token && (bars.length > 0 || games.length > 0)) {
-         setBars([]);
-         setGames([]);
-         setBarId('');
-         setGameId('');
-	 setFetchError(null);
-      }
-      setIsFetchingData(false);
-      return; // Exit early
-    }
+  // Handle user loading/token state (no data fetching here initially)
+  if (userLoading) {
+    console.log(`⏳ Waiting: User Loading=${userLoading}`);
+    setIsFetchingInitial(true); // Still indicate loading while user context resolves
+    return;
+  }
+   if (!token) {
+       console.log(`⏳ Waiting: Token Available=${!!token}`);
+       setFetchError('User not authenticated.'); setIsFetchingInitial(false); 
+       return;
+   }
 
-  const fetchData = async () => {
+  // If we reach here, user is loaded and token exists
+  console.log("User context ready. Bar ID:", barId);
+  if (!barId) {
+         console.error("AddScreening mounted without a barId in route params!");
+         setFetchError("Bar ID not provided."); // Critical error
+  }
+  setIsFetchingInitial(false);
 
-    setIsFetchingData(true); // Start loading indicator for fetch
-    setFetchError(null);
-    console.log("👀 Fetching data for AddScreening...");
+}, [token, userLoading, route.params?.barId, barId]);
 
-    try {
-	const headers = { Authorization: `Bearer ${token}` };
-        const [barsRes, gamesRes] = await axios.all([
-        	axios.get(`${API_BASE_URL}/bars/owned`, {headers}),
-        	axios.get(`${API_BASE_URL}/games`, {headers}),
-        ]);
-      
-      if (!barsRes.ok) throw new Error(`Failed to fetch bars: ${barsRes.status}`);
+  
+  const handleSearchGames = async () => {
 
-      const barsData = barsRes.data;
-      setBars(barsData.bars || []);
+	if (!searchSport) { // Validate sport selection
+            setSearchError("Please select a sport.");
+            return;
+        }
+        setIsSearchingGames(true);
+        setSearchError(null);
+        setSearchPerformed(true); // Mark that a search attempt was made
+        setGames([]); // Clear previous results
+        setGameId(''); // Clear previous game selection
+        setSelectedGameForDisplay(null);
 
-      if (!preSelectedBarId && barsData.bars?.length > 0 && !barId) {
-               setBarId(barsData.bars[0].id); // Default only if no pre-selection
-      }
+        // Prepare query parameters
+        const params = {sport: searchSport};
+        if (searchLeague) params.league = searchLeague.trim();
+        if (searchTeam) params.team = searchTeam.trim();
+        if (searchDate) params.date = formatDateForApi(searchDate); // Use utility function
 
-      if (!gamesRes.ok) throw new Error(`Failed to fetch games: ${gamesRes.status}`);
-       
-      const gamesData = await gamesRes.json();
-      console.log("Received Games Data:", gamesData.length); 
-      setGames(gamesData || []); // Should be an array of standardized game objects
+        console.log('Owner searching games with params:', params);
 
-      if (gamesData?.length > 0 && !gameId) {
-         setGameId(gamesData[0].id); // Set default game
-      } else if (gamesData?.length === 0) {
-         setGameId('');
-      }
-
-    } catch (err) {
-      console.error('Error fetching data:', err.response?.data || err.message || err);
-      const message = err.response?.data?.message || err.message || 'Failed to fetch data.';
-      setFetchError(message);
-      if (Platform.OS === 'web') toast.error(message);
-    } finally {
-          setIsFetchingData(false); // Stop loading indicator
-    }
-  };
-
-  fetchData(); // always run fetch, even if token is not yet ready — we check inside
-}, [token, userLoading, preSelectedBarId]);
-
+        try {
+            const response = await axios.get(`${API_BASE_URL}/games/search`, {
+                 params,
+                 headers: { Authorization: `Bearer ${token}` } // Don't forget auth
+            });
+            console.log('Owner game search response:', response.data);
+            const results = Array.isArray(response.data) ? response.data : [];
+            setGames(results);
+            if (results.length === 0) {
+                // No technical error, but inform the user
+                console.log("Search returned 0 games.");            }
+        } catch (err) {
+            console.error("Error searching games:", err.response?.data || err.message);
+            const message = err.response?.data?.message || 'Failed to search for games.';
+            setSearchError(message);
+        } finally {
+            setIsSearchingGames(false);
+        }
+    };
 
   const handleAddScreening = async () => {
     setFetchError(null);
 
     console.log("State before sending:", { barId, gameId, screeningTime });
+
+    if (!barId) {
+             Alert.alert("Error", "Bar information is missing.");
+             return;
+        }
+    if (!gameId) {
+            Alert.alert("Missing Selection", "Please search and select a game first.");
+            return;
+    }
 
     const bodyToSend = {
     	bar_id: barId,                // Convert barId -> bar_id
@@ -116,13 +155,10 @@ const AddScreening = () => {
     }
 
     try {
-      const reponse = await axios.post(`${API_BASE_URL}/screenings/add`,
+      const response = await axios.post(`${API_BASE_URL}/screenings/add`,
         bodyToSend, {
-                headers: {
-           		Authorization: `Bearer ${token}`,
-        	},
-        }
-      );
+                headers: {Authorization: `Bearer ${token}`},
+      });
       console.log("Add Screening Success Response:", response.data);
 
       if (Platform.OS === 'web') {
@@ -146,219 +182,345 @@ const AddScreening = () => {
     }
   };
 
-  if (userLoading || isFetchingData) {
-      return (
-          <View style={[styles.container, styles.center]}>
-              <ActivityIndicator size="large" color="#0000ff" />
-              <Text>Loading options...</Text>
-          </View>
-      );
-  }
+  // --- Handler for tapping a game in the list ---
+  const handleGameSelect = (game) => {
+      console.log('Selected Game:', game.id);
+      setGameId(game.id); // Set the actual ID for submission
+      setSelectedGameForDisplay(game); // Set the game object for display/styling
+  };
 
-  if (fetchError) {
+  // --- Render Game Item for Owner ---
+  const renderOwnerGameItem = ({ item }) => {
+      const isSelected = selectedGameForDisplay?.id === item.id;
+        return (
+          <TouchableOpacity
+              style={[styles.itemContainer, isSelected && styles.itemContainerSelected]} 
+              onPress={() => handleGameSelect(item)}
+          >
+              {/* Reuse similar layout as GameSearch renderItem */}
+              <Text style={styles.itemTitle}>{item.homeTeam || 'TBD'} vs {item.awayTeam || 'TBD'}</Text>
+              <Text style={styles.itemSubtitle}>{item.league || 'Unknown League'}</Text>
+              {/* Ensure formatApiDateTime handles null startTime */}
+              <Text style={styles.itemTime}>{item.startTime ? formatApiDateTime(item.startTime) : 'Time TBD'}</Text>
+               {/* You could display the request count here if you implement that feature */}
+              {/* {item.requestCount > 0 && <Text style={styles.requestCount}>{item.requestCount} requests!</Text>} */}
+              {isSelected && <Text style={styles.selectedText}>✓ Selected</Text>}
+          </TouchableOpacity>
+        );
+    };
+
+  // --- Conditional Renders for Loading/Error States ---
+
+    if (isFetchingInitial) { // Initial loading for user context/barId check
         return (
             <View style={[styles.container, styles.center]}>
-                <Text style={styles.errorText}>Error loading data:</Text>
-                <Text style={styles.errorText}>{fetchError}</Text>
-                {/* Optionally add a retry button */}
+                <ActivityIndicator size="large" color="#0000ff" />
+                <Text>Loading...</Text>
             </View>
         );
-  }
+    }
 
-   // Handle case where lists are empty after loading (e.g., owner has no bars)
-  if (!userLoading && token && !isFetchingData && bars.length === 0) {
-    return (
-       <View style={[styles.container, styles.center]}>
-         <Text>You don't seem to own any bars yet.</Text>
-         <Text>Add one before scheduling a screening.</Text>
-         {/* Optionally add a button to navigate to an "Add Bar" screen */}
-       </View>
-    );
-  }
-   if (!userLoading && token && !isFetchingData && games.length === 0) {
-    return (
-       <View style={[styles.container, styles.center]}>
-         <Text>No upcoming games found via the API.</Text>
-         <Text>(Check API configuration or selected endpoint)</Text>
-       </View>
-    );
-  }
-
-  return (
-    // Use ScrollView in case content overflows on smaller screens
-    <ScrollView style={styles.container}>
-      {bars.length > 0 && (
-        <>
-          <Text style={styles.label}>Select Your Bar:</Text>
-          <View style={styles.pickerContainer}>
-            <Picker
-                selectedValue={barId}
-                onValueChange={(itemValue) => setBarId(itemValue)}
-                style={styles.picker} >
-              {bars.map((bar) => (
-                <Picker.Item key={bar.id} label={bar.name} value={bar.id} />
-              ))}
-            </Picker>
-          </View>
-        </>
-      )}
-
-      {games.length > 0 && (
-         <>
-            <Text style={styles.label}>Select Game:</Text>
-             <View style={styles.pickerContainer}>
-                <Picker
-                    selectedValue={gameId}
-                    onValueChange={(itemValue) => setGameId(itemValue)}
-                    style={styles.picker} >
-                    {games.map((game) => (
-                        // Use fields from the standardized game object for the label
-                        <Picker.Item
-                            key={game.id} // Use the unique external ID as the key
-                            label={`${game.homeTeam} vs ${game.awayTeam} (${game.sport})`}
-                            value={game.id} // The value is the external ID
-                        />
-                    ))}
-                </Picker>
+    if (fetchError) { // Display critical errors (like no token, no barId)
+        return (
+            <View style={[styles.container, styles.center]}>
+                <Text style={styles.errorText}>Error:</Text>
+                <Text style={styles.errorText}>{fetchError}</Text>
             </View>
-         </>
-      )}
+        );
+    }
 
+    const ContainerComponent = Platform.OS === 'web' ? View : ScrollView;
 
-      {/* === Platform-Specific Date/Time Picker === */}
-      {Platform.OS === 'web' ? (
-        // --- WEB Implementation using react-datepicker ---
-        <View style={styles.datePickerWrapper}>
-          <Text style={styles.label}>Select Screening Time:</Text>
-          <DatePicker
-            selected={screeningTime} // Bind to your Date state variable
-            onChange={(date) => setScreeningTime(date)} // Updates state directly with Date object
-            showTimeSelect // Enable time selection
-            dateFormat="MMMM d, yyyy h:mm aa" // How the selected date/time appears in the input
-            minDate={new Date()} // Prevent selection of past dates
-            timeIntervals={15} // Optional: Set minute intervals (e.g., 15)
-            // You can add custom styling via className or customInput
-            // className="my-custom-datepicker-input"
-            // Example using customInput if needed:
-            // customInput={<Button title={screeningTime.toLocaleString()}/>}
-          />
-        </View>
+    // --- Main Render ---
 
-      ) : (
-        // --- NATIVE (iOS/Android) Implementation (Unchanged) ---
-        <>
-          <Text style={styles.label}>Select Screening Time:</Text>
-          <View style={styles.dateButtonContainer}>
-            {!showDatePicker && (
-              <Button title={screeningTime.toLocaleString()} onPress={() => setShowDatePicker(true)} />
-            )}
-          </View>
-          {showDatePicker && (
-            <DateTimePicker
-              // ... other props ...
-              value={screeningTime}
-              mode="datetime"
-              onChange={(_, selectedDate) => {
-                setShowDatePicker(false);
-                if (selectedDate) {
-                  setScreeningTime(selectedDate);
-                }
-              }}
-              minimumDate={new Date()}
+    return (
+        <ContainerComponent style={styles.container} 
+	{...(Platform.OS !== 'web' && { contentContainerStyle: styles.contentContainer })}>
+	  <SafeAreaView style={styles.safeArea}>
+            {/* --- Game Search Section for Owner --- */}
+            <Text style={styles.label}>Search for Game to Schedule:</Text>
+
+            {/* Sport Picker */}
+                <View style={styles.pickerContainer}>
+                    <Picker
+                        selectedValue={searchSport}
+                        onValueChange={(itemValue) => setSearchSport(itemValue)}
+                        style={styles.picker}
+                        enabled={!isSearchingGames}
+                        >
+                        {SUPPORTED_SPORTS.map(sport => (
+                             <Picker.Item key={sport.value} label={sport.label} value={sport.value} />
+                        ))}
+                    </Picker>
+                </View>
+
+            {/* League Input */}
+            <TextInput
+                style={styles.input}
+                placeholder="Filter by League Name (Optional)"
+                value={searchLeague}
+                onChangeText={setSearchLeague}
+                editable={!isSearchingGames}
             />
-          )}
-        </>
-      )}
-      {/* === End Platform-Specific === */}
 
-      <View style={styles.addButtonContainer}>
-        <Button
-            title="Add Screening"
-            onPress={handleAddScreening}
-            disabled={!barId || !gameId || isFetchingData} // Disable if no selection or loading
-            color="#007AFF" // Example styling
+            {/* Team Input */}
+            <TextInput
+                style={styles.input}
+                placeholder="Filter by Team Name (Optional)"
+                value={searchTeam}
+                onChangeText={setSearchTeam}
+                editable={!isSearchingGames}
             />
-       </View>
 
-      {/* Display fetch errors near the button if they occur during submission */}
-      {fetchError && <Text style={[styles.errorText, { marginTop: 10 }]}>{fetchError}</Text>}
+            {/* Date Input */}
+            {Platform.OS === 'web' ? (
+                <View style={styles.datePickerWrapper}>
+                  <Text style={styles.label}>Filter by Date (Optional):</Text>
+                  <DatePicker
+                    selected={searchDate}
+                    onChange={setSearchDate}
+                    dateFormat="yyyy-MM-dd" // Use consistent format
+                    isClearable
+                    placeholderText="Select Date (YYYY-MM-DD)"
+                    />
+                </View>
+              ) : (
+                <>
+                  <Text style={styles.label}>Filter by Date (Optional):</Text>
+                  <View style={styles.dateButtonContainer}>
+                     <Button
+                        title={searchDate ? formatDateForApi(searchDate) : "Select Date"} // Use formatting
+                        onPress={() => setShowOwnerDatePicker(true)}
+                        disabled={isSearchingGames}
+                        />
+                     {searchDate && (
+                         <Button title="Clear" onPress={() => setSearchDate(null)} disabled={isSearchingGames} color="#888" />
+                     )}
+                  </View>
+                  {showOwnerDatePicker && (
+                    <DateTimePicker
+                      value={searchDate || new Date()}
+                      mode="date"
+                      display="default"
+                      onChange={(_, date) => {
+                        setShowOwnerDatePicker(false);
+                        setSearchDate(date || null); 
+                      }}
+                    />
+                  )}
+                </>
+              )}
 
-    </ScrollView> // Close ScrollView
-  );
+            {/* Search Button */}
+            <View style={styles.searchButtonContainer}>
+                <Button
+                    title="Search Games"
+                    onPress={handleSearchGames} // Connect the handler
+                    disabled={isSearchingGames || !searchSport}
+                />
+            </View>
+
+            {/* Search Loading/Error Indicators */}
+            {isSearchingGames && <ActivityIndicator style={{ marginVertical: 10 }} size="small" color="#0000ff" />}
+            {searchError && <Text style={[styles.errorText, { marginTop: 0, marginBottom: 10 }]}>{searchError}</Text>}
+
+            {/* --- End Game Search Section --- */}
+
+	    {/* --- Search Results List (NEW) --- */}
+        {/* Show list only if search wasn't loading, search finished, and didn't error */}
+         {!isSearchingGames && searchPerformed && !searchError && (
+             <>
+                {/* Use a more descriptive label */}
+                <Text style={styles.label}>{games.length > 0 ? 'Tap Game Below to Select:' : 'No Games Found'}</Text>
+
+                {/* Conditionally render FlatList or 'No games' message */}
+                {games.length > 0 ? (
+                     <FlatList
+                        data={games}
+                        renderItem={renderOwnerGameItem} 
+                        keyExtractor={(item) => item.id.toString()}
+                        style={styles.list}
+                        extraData={selectedGameForDisplay} // Use the new state variable
+                    />
+                ) : (
+                    // Keep the message if search is done but no games found
+                    <Text style={styles.infoText}>No games found matching your criteria.</Text>
+                )}
+             </>
+         )}
+        {/* --- End Search Results List --- */}
+
+                       
+            {/* --- Screening Time Selection --- */}
+            {/* Only show time picker if a game has been selected from search */}
+            {gameId ? ( // Conditional rendering based on gameId selection
+                 <>
+                    {Platform.OS === 'web' ? (
+                        <View style={styles.datePickerWrapper}>
+                          <Text style={styles.label}>Select Screening Time:</Text>
+                          <DatePicker
+                            selected={screeningTime}
+                            onChange={(date) => date && setScreeningTime(date)} // Ensure date isn't null
+                            showTimeSelect
+                            dateFormat="Pp" // Locale-specific date and time (short)
+                            minDate={new Date()}
+                            timeIntervals={15}
+                          />
+                        </View>
+                      ) : (
+                        <>
+                          <Text style={styles.label}>Select Screening Time:</Text>
+                          <View style={styles.dateButtonContainer}>
+                            {!showScreeningTimePicker && (
+                              <Button title={screeningTime.toLocaleString()} onPress={() => setShowScreeningTimePicker(true)} />
+                            )}
+                          </View>
+                          {showScreeningTimePicker && (
+                            <DateTimePicker
+                              value={screeningTime}
+                              mode="datetime" // Allows date and time
+                              display="default"
+                              onChange={(_, selectedDate) => {
+                                setShowScreeningTimePicker(false);
+                                if (selectedDate) {
+                                  setScreeningTime(selectedDate);
+                                }
+                              }}
+                              minimumDate={new Date()} // Cannot schedule in the past
+                            />
+                          )}
+                        </>
+                      )}
+                 </>
+            ) : (
+		searchPerformed && !searchError && games.length > 0 &&
+                    <Text style={styles.infoText}>Select a game from the list to set screening time.</Text>
+                )}
+		          {/* --- Add Screening Button (Conditional) --- */}
+                {gameId ? (
+                    <View style={styles.addButtonContainer}>
+                        <Button title="Add Screening" onPress={handleAddScreening} disabled={!barId || !gameId || isFetchingInitial || isSearchingGames} color="#007AFF" />
+                    </View>
+                 ) : null}
+
+
+                {/* Display final submission errors */}
+                {fetchError && !isFetchingInitial && <Text style={[styles.errorText, { marginTop: 10 }]}>{fetchError}</Text>}
+
+            </SafeAreaView>
+        </ContainerComponent>
+    );
 };
 
+// --- Styles --- 
 const styles = StyleSheet.create({
-  container: {
-       flex: 1,
-       padding: 20,
-       backgroundColor: '#f5f5f5' // Light background
+    container: {
+        flex: 1,
+        backgroundColor: '#f5f5f5',
+	...(Platform.OS === 'web' && {
+	    height: '100%',
+            overflowY: 'auto', // Enable vertical scrollbar on web
+	    padding: 20,
+	    paddingBottom: 60
+        }),
     },
-  center: {
-       justifyContent: 'center',
-       alignItems: 'center',
-       flex: 1 // Ensure it takes full space for centering
+    contentContainer: { // Style for the inner content
+        padding: 20, // Move padding here from container
+        paddingBottom: 60, // Ensure extra space at the bottom
+        ...(Platform.OS === 'web' && {
+            flexGrow: 1, // Allows container to grow if content is short
+        }),
     },
-  label: {
-      fontSize: 16,
-      marginTop: 15,
-      marginBottom: 5,
-      fontWeight: 'bold',
-      color: '#333' // Darker text
+    center: {
+        justifyContent: 'center',
+        alignItems: 'center',
+        flex: 1
     },
-  pickerContainer: { // Add styling for Picker container
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 5,
-    backgroundColor: '#fff', // White background for picker
-    marginBottom: 15,
-  },
-  picker: { // Style the picker itself if needed (might have limited effect)
-      height: Platform.OS === 'ios' ? 180 : 50, // iOS needs explicit height
-  },
-  datePickerWrapper: { // Style the container for the web date picker + label
-    marginBottom: 20,
-  },
-  dateButtonContainer: {
-      marginBottom: 20,
-      alignItems: 'flex-start' // Align button to the left
-  },
-  addButtonContainer: {
-      marginTop: 20,
-      marginBottom: 40 // Add some space at the bottom
-  },
-   errorText: {
-       color: 'red',
-       textAlign: 'center',
-       marginTop: 10,
-   },
-
-   input: { // Ensure you have styles for the web TextInput
-    borderWidth: 1,
-    borderColor: '#ccc',
-    padding: 10,
-    marginBottom: 15,
-    fontSize: 16,
-    backgroundColor: '#fff', // Match picker background?
-  },
-  dateInputContainer: { // Optional wrapper for web input + label
-    marginBottom: 15,
-  },
-
-   pickerContainer: {
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8, // Match other inputs?
-    backgroundColor: '#fff',
-    marginBottom: 15,
-  },
-  disabledPickerContainer: { // Style for the picker when disabled
-      backgroundColor: '#e9ecef', // Light grey background
-      borderColor: '#ced4da', // Darker grey border
-      opacity: 0.7, // Make it look faded
-  },
-  disabledPickerItem: { // Optional: Style for items when picker is disabled
-     // color: '#6c757d', // Grey text (might not work consistently across platforms)
-  }
+    label: {
+        fontSize: 16,
+        marginTop: 15,
+        marginBottom: 5,
+        fontWeight: 'bold',
+        color: '#333'
+    },
+    input: {
+        borderWidth: 1,
+        borderColor: '#ccc',
+        borderRadius: 8,
+        padding: 10,
+        marginBottom: 15,
+        fontSize: 16,
+        backgroundColor: '#fff',
+        height: 45, // Consistent height
+    },
+    pickerContainer: {
+        borderWidth: 1,
+        borderColor: '#ccc',
+        borderRadius: 8,
+        backgroundColor: '#fff',
+        marginBottom: 15,
+    },
+    picker: { // Common style for Picker, height might be needed specifically for iOS
+        height: Platform.OS === 'ios' ? 180 : 50,
+    },
+    datePickerWrapper: { // Web date picker container
+        marginBottom: 20,
+    },
+    dateButtonContainer: { // Mobile date/time button container
+        marginBottom: 10, // Reduce bottom margin slightly
+        flexDirection: 'row', // Allow Clear button side-by-side
+        alignItems: 'center',
+    },
+    searchButtonContainer: {
+         marginVertical: 15, // Add vertical margin
+    },
+    addButtonContainer: {
+        marginTop: 20,
+        marginBottom: 40
+    },
+    errorText: {
+        color: 'red',
+        textAlign: 'center',
+        marginTop: 10,
+    },
+    safeArea: { // Add style for SafeAreaView
+         flex: 1,
+     },
+     picker: {
+         height: Platform.OS === 'ios' ? 180 : 50,
+         // Add width: '100%' if needed, depending on container
+     },
+     list: {
+         // flex: 1, // Usually NOT needed inside ScrollView/View with specific height rules
+         maxHeight: 350, // Adjust as needed for screen space
+         marginBottom: 15,
+         borderColor: '#ccc',
+         borderWidth: 1,
+         borderRadius: 8,
+         backgroundColor: '#FFF', // Add background to list area
+     },
+     itemContainer: {
+         backgroundColor: '#fff',
+         paddingVertical: 12, // Adjust padding
+         paddingHorizontal: 15,
+         borderBottomWidth: 1,
+         borderBottomColor: '#eee',
+     },
+     itemContainerSelected: {
+         borderColor: '#007AFF',
+         backgroundColor: '#e7f3ff',
+         borderWidth: 1, // Keep border subtle
+         borderLeftWidth: 5, // Highlight left side
+         paddingLeft: 11,
+     },
+     itemTitle: { fontSize: 15, fontWeight: 'bold', color: '#212529' },
+     itemSubtitle: { fontSize: 13, color: '#6c757d', marginTop: 3 },
+     itemTime: { fontSize: 13, color: '#17a2b8', fontWeight: '500', marginTop: 5 },
+     selectedText: {
+         position: 'absolute', right: 15, top: '50%', marginTop: -10, color: 'green', fontSize: 20, fontWeight: 'bold',
+     },
+     infoText: { textAlign: 'center', marginVertical: 20, fontSize: 15, color: '#6c757d' },
 });
+
 
 export default AddScreening;

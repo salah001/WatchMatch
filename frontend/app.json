@@ -1,8 +1,7 @@
 {
   "expo": {
-    "name": "sports-watch-app",
-    "slug": "sports-watch-app",
-    "entryPoint": "./frontend/app.js",
+    "name": "WatchMatch",
+    "slug": "WatchMatch",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",

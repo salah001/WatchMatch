@@ -1,59 +1,126 @@
 // src/screens/User/BarsForGame.js
-import React, { useState, useEffect, useContext } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native';
-import axios from 'axios';
-import { useRoute, useNavigation } from '@react-navigation/native';
+import * as Location from 'expo-location'; // Import expo-location
+import React, { useState, useEffect, useContext } from 'react'; // Keep React imports
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native'; // Keep RN imports
+import axios from 'axios'; // Keep axios
+import { useRoute, useNavigation } from '@react-navigation/native'; // Keep navigation imports
 
-import { UserContext } from '../../context/UserContext';
-import { API_BASE_URL } from '../../config/api';
-// You might not need date formatting here unless showing screening times again
+import { UserContext } from '../../context/UserContext'; // Keep context import
+import { API_BASE_URL } from '../../config/api'; // Keep API base URL import
 
+// --- Start of the Component ---
 const BarsForGame = () => {
   const route = useRoute();
   const navigation = useNavigation();
   const { token } = useContext(UserContext); // Get auth token
 
-  // Get params passed from GameSearchScreen
+  // --- State Variables ---
+  // Location State
+  const [location, setLocation] = useState(null); // To store { latitude, longitude }
+  const [locationErrorMsg, setLocationErrorMsg] = useState(null);
+  const [locationPermissionGranted, setLocationPermissionGranted] = useState(false); // Track permission status
+
+  // Passed Params
   const { external_game_id, gameTitle } = route.params || {};
 
-  // State
+  // Data State
   const [bars, setBars] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false); // For fetching bars
+  const [error, setError] = useState(null); // For fetching bars error
 
-  // Fetch bars showing the game
+  // --- useEffect for Location 
   useEffect(() => {
-    if (!external_game_id || !token) {
-      setError("Game ID missing or not logged in.");
-      setBars([]);
-      return;
+    (async () => {
+      console.log("Requesting location permission...");
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setLocationErrorMsg('Permission to access location was denied');
+        console.warn('Location permission denied');
+        setLocationPermissionGranted(false);
+        // Decide what to do here: Fetch ALL bars? Show error?
+        return;
+      }
+      setLocationPermissionGranted(true);
+      console.log("Location permission granted.");
+
+      try {
+        console.log("Getting current position...");
+        let currentPosition = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        setLocation({
+          latitude: currentPosition.coords.latitude,
+          longitude: currentPosition.coords.longitude,
+        });
+        console.log("Location obtained:", currentPosition.coords);
+        setLocationErrorMsg(null); // Clear any previous location error
+      } catch (error) {
+          console.error("Error getting location:", error);
+          setLocationErrorMsg("Could not retrieve location. Please ensure location services are enabled.");
+          setLocation(null); // Clear location if fetching failed
+      }
+    })(); // Immediately invoke the async function
+  }, []); // Empty dependency array means this runs once on mount
+
+  // --- useEffect for Fetching Bars 
+  useEffect(() => {
+    // Wait until we have the game ID, token, AND location permission status decided.
+    // Also wait until we actually have a location if permission was granted.
+    if (!external_game_id || !token || locationPermissionGranted === null) {
+        // Don't fetch if basic requirements aren't met or permission status is unknown
+        return;
     }
+
+    // Decide if we should fetch nearby or all (based on permission and location availability)
+    const canFetchNearby = locationPermissionGranted && location;
 
     const fetchBarsForGame = async () => {
       setIsLoading(true);
       setError(null);
-      setBars([]);
+      setBars([]); // Clear previous bars
 
-      console.log(`Fetching bars for game ID: ${external_game_id}`);
+    // ---- Construct API URL and Params ----
+      let apiUrl = `${API_BASE_URL}/screenings/game/${external_game_id}/bars`;
+      let config = {
+          headers: { Authorization: `Bearer ${token}` },
+          params: {} // Initialize params object
+      };
+  
+      if (canFetchNearby) {
+          console.log(`Fetching nearby bars for game ID: ${external_game_id} near Lat: ${location.latitude}, Lon: ${location.longitude}`);
+          // Add lat/lon as query parameters
+          config.params.lat = location.latitude;
+          config.params.lon = location.longitude;
+          config.params.radius = 10000; // Example: 10km radius in meters, make configurable later?
+      } else {
+           // Log based on why we're not fetching nearby
+           if (!locationPermissionGranted) {
+               console.log(`Location permission denied. Fetching all bars for game ID: ${external_game_id}`);
+               setError("Showing all bars for game (location permission denied)."); // Inform user
+           } else {
+               console.log(`Location not available yet. Fetching all bars for game ID: ${external_game_id}`);
+               // Don't set an error here, just proceed with fetching all
+           }
+          // No location params needed for fallback
+      }
+      // ------------------------------------
 
+    
       try {
-        const response = await axios.get(
-          `${API_BASE_URL}/screenings/game/${external_game_id}/bars`,
-          {
-            headers: { Authorization: `Bearer ${token}` }, // Include auth token
-          }
-        );
+        const response = await axios.get(apiUrl, config); // Current endpoint
+      
         console.log('Bars for game response:', response.data);
         setBars(response.data || []);
-        if (response.data.length === 0) {
-            setError("No bars found showing this game."); // Informative message
+        if (!response.data || response.data.length === 0) {
+            // Adjust message based on whether we searched nearby or not
+            if (canFetchNearby) {
+                 setError("No bars found showing this game near your location.");
+            } else {
+                 setError("No bars found showing this game."); // Original message for fallback
+            }
         }
       } catch (err) {
         console.error("Error fetching bars for game:", err.response?.data || err.message);
-        // Check for specific errors like 401 Unauthorized if token is bad
         if (err.response?.status === 401) {
              setError("Your session has expired. Please log in again.");
-             // Optional: Trigger logout?
         } else {
             setError(err.response?.data?.message || 'Failed to fetch bars. Please try again.');
         }
@@ -63,9 +130,11 @@ const BarsForGame = () => {
     };
 
     fetchBarsForGame();
-  }, [external_game_id, token]); // Re-fetch if game ID or token changes
+    // Dependency arra
+  }, [external_game_id, token, location, locationPermissionGranted]); // Re-fetch if game ID or token changes
 
-  // --- Navigate to Bar Details ---
+
+  // --- Navigation Handler ---
   const handleBarPress = (bar) => {
       if (!bar || !bar.id) {
           console.error("Invalid bar data for navigation:", bar);
@@ -83,35 +152,51 @@ const BarsForGame = () => {
     <TouchableOpacity style={styles.itemContainer} onPress={() => handleBarPress(item)}>
       <Text style={styles.itemTitle}>{item.name}</Text>
       <Text style={styles.itemSubtitle}>{item.address}</Text>
-      {/* Optional: Show description if available */}
       {item.description && <Text style={styles.itemDescription}>{item.description}</Text>}
     </TouchableOpacity>
   );
 
-  // --- Screen Content ---
+  // --- Final Return Statement for the Component ---
   return (
     <SafeAreaView style={styles.screenContainer}>
       <Text style={styles.headerTitle}>{gameTitle || 'Bars Showing Game'}</Text>
 
+      {/* Display Location Status (for debugging) */}
+      {locationErrorMsg && <Text style={styles.errorText}>{locationErrorMsg}</Text>}
+      {!location && !locationErrorMsg && locationPermissionGranted && <ActivityIndicator size="small" color="#007AFF" />}
+      {location && <Text style={{textAlign: 'center', paddingVertical: 5, color: 'green'}}>Location Acquired</Text>}
+      {/* You could display coords: {location && <Text>Lat: {location.latitude.toFixed(4)}, Lon: {location.longitude.toFixed(4)}</Text>} */}
+
+
+      {/* Display Bar Fetching Status and List */}
       {isLoading && <ActivityIndicator size="large" color="#007AFF" style={styles.loader} />}
 
-      {error && !isLoading && ( // Show error only if not loading
+      {/* Display bars fetch error *unless* it's just because location permission was denied */}
+      {error && !isLoading && locationPermissionGranted && (
           <Text style={styles.errorText}>{error}</Text>
       )}
 
-      {!isLoading && !error && bars.length > 0 && ( // Show list only if no error and bars exist
+      {/* Display bars list */}
+      {!isLoading && bars.length > 0 && (
         <FlatList
           data={bars}
           renderItem={renderBarItem}
-          keyExtractor={(item) => item.id.toString()} // Use bar's unique DB ID
+          keyExtractor={(item) => item.id.toString()}
           style={styles.list}
         />
       )}
+
+       {/* Message if no bars found *and* no error occurred */}
+      {!isLoading && !error && bars.length === 0 && locationPermissionGranted && (
+         <Text style={styles.errorText}>No bars found showing this game near you.</Text>
+      )}
+
+
     </SafeAreaView>
   );
-};
+}; // --- End of the Component ---
 
-// --- Styles --- (Adapt as needed)
+// --- Styles --- (Keep these outside the component)
 const styles = StyleSheet.create({
   screenContainer: {
     flex: 1,

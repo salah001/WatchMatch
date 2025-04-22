@@ -1,37 +1,37 @@
 // src/screens/User/GameSearch.js
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  Button, // Or Pressable if you prefer
-  FlatList,
-  StyleSheet,
-  ActivityIndicator,
-  TouchableOpacity,
-  Platform,
-  SafeAreaView,
-  Pressable, // Use Pressable for consistency
-} from 'react-native';
+import { View, Text, TextInput, Button, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, Platform, SafeAreaView, Pressable} from 'react-native';
 import axios from 'axios';
+import RNPickerSelect from 'react-native-picker-select';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useNavigation } from '@react-navigation/native';
 
 import { API_BASE_URL } from '../../config/api';
 import { formatApiDateTime, formatDateForApi } from '../../utils/dateTimeUtils';
 
+// Define items in the format required by this library
+const sportItems = [
+    { label: 'Soccer', value: 'Soccer' },
+    { label: 'Basketball', value: 'Basketball' },
+    { label: 'American Football', value: 'American Football' },
+    { label: 'Boxing', value: 'Boxing' },
+    { label: 'MMA', value: 'MMA' },
+];
+
 const GameSearch = () => { // Ensure component name matches navigator
   const navigation = useNavigation();
 
   // State for search criteria
+  const [searchSport, setSearchSport] = useState('Soccer');  
   const [searchTermTeam, setSearchTermTeam] = useState('');
   const [searchTermLeague, setSearchTermLeague] = useState('');
   const [searchDate, setSearchDate] = useState(null); // Store Date object
-
+  
   // State for date picker visibility
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   // State for results and loading/error
+  const [searchPerformed, setSearchPerformed] = useState(false);
   const [searchResults, setSearchResults] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -85,36 +85,38 @@ const GameSearch = () => { // Ensure component name matches navigator
     setIsLoading(true);
     setError(null);
     setSearchResults([]);
+    setSearchPerformed(true);
 
     // Prepare query parameters
-    const params = {
-      sport: 'Soccer', // Hardcoded for now as requested
-    };
+    const params = { }; 
+    if (searchSport) params.sport = searchSport;
     if (searchTermTeam) params.team = searchTermTeam.trim(); // Trim whitespace
     if (searchTermLeague) params.league = searchTermLeague.trim(); // Trim whitespace
     if (searchDate) params.date = formatDateForApi(searchDate); // Format date for API
 
     // Simple validation: Ensure at least one criteria is entered
-    if (!params.team && !params.league && !params.date) {
-        setError("Please enter a team, league, or select a date to search.");
-        setIsLoading(false);
-        return;
+    if (!params.sport) { // Now checks if sport is missing
+    	setError("Please select a sport to search.");
+    	setIsLoading(false);
+	setSearchPerformed(false);
+    	return;
     }
-
+    
     console.log('Searching with params:', params);
 
     try {
       const response = await axios.get(`${API_BASE_URL}/games/search`, { params });
       console.log('Search response:', response.data);
+      const results = Array.isArray(response.data) ? response.data : [];
       setSearchResults(response.data || []); // Ensure it's always an array
       if (response.data.length === 0) {
-          // Set error state to display message, even though it's not a technical error
-          setError("No games found matching your criteria.");
+          console.log("Search returned 0 games.");
       }
     } catch (err) {
       console.error("Error searching games:", err.response?.data || err.message);
       // Set error state to display message from backend or generic message
       setError(err.response?.data?.message || 'Failed to search for games. Please try again.');
+      setSearchResults([]);   
     } finally {
       setIsLoading(false);
     }
@@ -156,8 +158,21 @@ const GameSearch = () => { // Ensure component name matches navigator
   // --- Component Render ---
   return (
     <SafeAreaView style={styles.screenContainer}>
+
       <View style={styles.searchContainer}>
-        <Text style={styles.searchTitle}>Find Soccer Games</Text>
+	
+        <Text style={styles.label}>Select Sport:</Text> 
+		<View style={styles.pickerContainer}>
+                    <RNPickerSelect
+                        placeholder={{ label: "Select a sport...", value: null }}
+                        items={sportItems}
+                        onValueChange={(value) => setSearchSport(value || 'Soccer')} // Default back if placeholder selected?
+    			style={pickerSelectStyles}
+                        value={searchSport}
+                        useNativeAndroidPickerStyle={false}
+			disabled={isLoading}
+                    />
+               </View>  
         <TextInput
           style={styles.input}
           placeholder="Search by Team Name"
@@ -233,7 +248,7 @@ const GameSearch = () => { // Ensure component name matches navigator
         <Pressable
             style={({ pressed }) => [styles.searchButton, isLoading && styles.searchButtonDisabled, pressed && styles.searchButtonPressed]}
             onPress={handleSearch}
-            disabled={isLoading}
+            disabled={isLoading || !searchSport}
         >
             <Text style={styles.searchButtonText}>Search Games</Text>
         </Pressable>
@@ -246,14 +261,12 @@ const GameSearch = () => { // Ensure component name matches navigator
           <Text style={styles.errorText}>{error}</Text>
       )}
 
-      {!isLoading && !error && searchResults.length === 0 && (
-           // Optional: Show a subtle message if search was successful but yielded 0 results
-           // (This might conflict with the error message "No games found..." - choose one)
-           // <Text style={styles.infoText}>Enter criteria and search.</Text>
-           <></>
+      {!isLoading && !error && searchResults.length === 0 && searchPerformed && (
+           
+           <Text style={styles.infoText}>No games found matching your selection.</Text>
       )}
 
-      {!isLoading && searchResults.length > 0 && ( // Show list only if results exist and not loading
+      {!isLoading && searchResults.length > 0 && ( // Show list only if results exist and not loading  
          <FlatList
             data={searchResults}
             renderItem={renderGameItem}
@@ -264,6 +277,7 @@ const GameSearch = () => { // Ensure component name matches navigator
       )}
     </SafeAreaView>
   );
+
 };
 
 // --- Styles ---
@@ -383,75 +397,25 @@ const styles = StyleSheet.create({
        fontSize: 16,
        fontWeight: '600',
    },
-  // Common styles
-  list: {
-      flex: 1,
-  },
-  listContentContainer: {
-     paddingBottom: 20, // Add padding at the bottom of the list
-  },
-  itemContainer: {
-      backgroundColor: '#fff',
-      padding: 15,
-      marginVertical: 6, // Slightly more vertical space
-      marginHorizontal: 10,
-      borderRadius: 8,
-      borderWidth: 1,
-      borderColor: '#e9ecef',
-      // Add shadow for depth (optional)
-      shadowColor: "#000",
-      shadowOffset: { width: 0, height: 1 },
-      shadowOpacity: 0.15,
-      shadowRadius: 2.0,
-      elevation: 2,
-  },
-  itemTitle: {
-      fontSize: 16,
-      fontWeight: 'bold',
-      color: '#212529',
-      marginBottom: 2,
-  },
-  itemSubtitle: {
-      fontSize: 13,
-      color: '#6c757d',
-      marginTop: 3,
-  },
-  itemTime: {
-      fontSize: 14,
-      color: '#17a2b8', // Cyan color for time?
-      fontWeight: '500',
-      marginTop: 6,
-  },
-   itemStatus: {
-      fontSize: 13,
-      color: '#fd7e14', // Orange color for status
-      fontStyle: 'italic',
-      marginLeft: 5,
-  },
-   errorTextSmall: {
-       fontSize: 12,
-       color: '#dc3545',
-       fontStyle: 'italic',
-       marginTop: 3,
-   },
-  loader: {
-      marginTop: 40, // More space for loader
-  },
-  errorText: {
-      color: '#dc3545',
-      textAlign: 'center',
-      marginTop: 25,
-      paddingHorizontal: 15,
-      fontSize: 16, // Slightly larger error text
-      fontWeight: '500',
-  },
-   infoText: { // For messages like "Enter criteria..."
-       textAlign: 'center',
-       marginTop: 25,
-       paddingHorizontal: 15,
-       fontSize: 15,
-       color: '#6c757d',
-   },
+});
+  // Define styles for react-native-picker-select (check library docs for details)
+const pickerSelectStyles = StyleSheet.create({
+    inputIOS: {
+        fontSize: 16, paddingVertical: 12, paddingHorizontal: 10, borderWidth: 1,
+        borderColor: 'gray', borderRadius: 4, color: 'black', paddingRight: 30, /* ... more styles */
+    },
+    inputAndroid: {
+         fontSize: 16, paddingHorizontal: 10, paddingVertical: 8, borderWidth: 0.5,
+         borderColor: 'purple', borderRadius: 8, color: 'black', paddingRight: 30, /* ... more styles */
+    },
+    placeholder: {
+        color: 'grey', // Style the placeholder text if you use one
+    },
+    iconContainer: { // Style the container for the dropdown arrow
+        top: 10, // Adjust vertical position of arrow
+        right: 12,
+    },
+
 });
 
 export default GameSearch;
